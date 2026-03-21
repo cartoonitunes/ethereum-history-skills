@@ -258,6 +258,8 @@ README must include:
 
 ## Step 10: Publish
 
+**Note:** Once a contract is verified on EthereumHistory, its proof fields are locked. Only admins can overwrite an existing proof. Do not attempt to re-submit a proof for an already-verified contract unless you have admin access and a legitimate correction.
+
 Once verified, follow the full publishing pipeline:
 
 1. Create verification repo in the `cartoonitunes/` GitHub org
