@@ -121,17 +121,38 @@ This generates all permutations of function declarations and tests each one. For
 
 Once cracked (byte-for-byte match), run ALL four steps:
 
-### 7a. Create verification repo
+### 7a. Add proof to awesome-ethereum-proofs
 
-Create `cartoonitunes/<contractname>-verification` on GitHub containing:
-- Source code (`.sol`)
-- Compiler info in README
-- Reproducible verification script
-- Git config: `user.name "cartoonitunes"`, `user.email "cartoonitunes@users.noreply.github.com"`
+**New proofs go in `cartoonitunes/awesome-ethereum-proofs` under `proofs/<contractname>/`** — not a separate repo.
 
-### 7b. Update awesome-ethereum-proofs
+```
+proofs/
+  logger-verification/
+    Logger.sol
+    README.md
+    target_runtime.txt
+    verify.js
+```
 
-Add row to `repos/awesome-ethereum-proofs/README.md` table in chronological order by deployment date.
+Structure:
+- `<ContractName>.sol` — source code
+- `README.md` — address, compiler, optimizer, runtime/creation SHA-256, verification instructions
+- `target_runtime.txt` — on-chain runtime hex
+- `verify.js` (or similar) — reproducible script that downloads the compiler and checks the match
+
+Clone the repo, add your proof folder, open a PR. Git config: `user.name "cartoonitunes"`, `user.email "cartoonitunes@users.noreply.github.com"`
+
+**Note:** Individual verification repos (`cartoonitunes/*-verification`) are legacy. Don't create new ones. Existing ones remain as-is — their `verificationProofUrl` links still work.
+
+### 7b. Add row to the README table
+
+In the same PR, add a row to `README.md` in chronological order by deployment date:
+
+```
+| [ContractName](https://ethereumhistory.com/contract/0xADDR) | Mmm DD, YYYY (block N) | soljson vX.X.X (optimizer ON/OFF) | Exact bytecode match | [Proof](proofs/contractname/) |
+```
+
+Note the `[Proof](proofs/contractname/)` link format — points to the subfolder in the same repo, not an external repo.
 
 ### 7c. Document on EthereumHistory
 
