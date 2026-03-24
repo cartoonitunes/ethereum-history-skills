@@ -136,9 +136,26 @@ proofs/
 
 Structure:
 - `<ContractName>.sol` — source code
-- `README.md` — address, compiler, optimizer, runtime/creation SHA-256, verification instructions
+- `README.md` — address, compiler, optimizer, SHA-256 hashes, **Proved by** field, and verify instructions
 - `target_runtime.txt` — on-chain runtime hex
 - `verify.js` (or similar) — reproducible script that downloads the compiler and checks the match
+
+README template:
+```markdown
+| Field | Value |
+|-------|-------|
+| Address | `0xADDRESS` |
+| Deployed | Mmm DD, YYYY (block N) |
+| Compiler | soljson-vX.X.X+commit.XXXXXXX |
+| Optimizer | ON / OFF |
+| Runtime | N bytes |
+| Creation | N bytes |
+| Runtime SHA-256 | `...` |
+| Creation SHA-256 | `...` |
+| Proved by | [@Name](https://ethereumhistory.com/historian/ID) |
+```
+
+The `Proved by` field is mandatory — it's the canonical attribution for the proof, independent of git history.
 
 Clone the repo, add your proof folder, open a PR. Git config: `user.name "cartoonitunes"`, `user.email "cartoonitunes@users.noreply.github.com"`
 
