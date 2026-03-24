@@ -1,282 +1,269 @@
-# eth-cracker
+---
+name: eth-bytecode-cracker
+description: Reproduce exact on-chain bytecode for unverified frontier-era Ethereum contracts (2015-2016). Use when user says "crack contract", "verify bytecode", "match bytecode", "reproduce bytecode", "frontier contract", or wants to reverse-engineer and reproduce the exact compiled output of an early Ethereum contract. Covers bytecode analysis, source reconstruction, compiler sweep, permutation cracking, and the full publishing pipeline.
+---
 
-Reproduce exact on-chain bytecode for unverified Frontier-era Ethereum contracts.
+# Ethereum Bytecode Cracker
 
-## The Standard
+Reproduce byte-for-byte exact bytecode for unverified frontier-era Ethereum contracts (Aug 2015 - mid 2016).
 
-**A crack is not done until init bytecode AND runtime bytecode match on-chain, byte for byte.**
+## What "Cracked" Means
 
-The following are NOT cracks:
-- Functionally equivalent code that produces different bytecode
-- Decompiled output (Dedaub, Panoramix, etc.)
-- "Figured out what it does" without compiler proof
-- Partial matches (only runtime, only init, or close-but-not-exact)
+**Byte-for-byte match of both creation and runtime bytecode.** Not decompilation, not documentation, not "figuring out what it does." A contract is cracked ONLY when compiled source produces the exact on-chain bytecode.
 
-If you cannot reproduce the exact bytecode from source + compiler in a clean environment, you have not cracked it. Do not submit.
+## Workflow Overview
 
-## Step 0: Check If Already Done
+1. **Fetch on-chain bytecode** (creation + runtime)
+2. **Extract selectors** and identify functions
+3. **Trace bytecode** to understand storage layout, logic, events
+4. **Reconstruct Solidity source**
+5. **Compile and compare** across compiler versions + optimizer settings
+6. **Permutation crack** function declaration order (critical for optimizer output)
+7. **Publish** via the verification pipeline
 
-Before any crack work:
-
-```bash
-ETHERSCAN_KEY="your-key"
-ADDRESS="0x..."
-
-# 1. Check Etherscan verification
-curl "https://api.etherscan.io/v2/api?chainid=1&module=contract&action=getsourcecode&address=$ADDRESS&apikey=$ETHERSCAN_KEY" \
-  | python3 -c "import sys,json; r=json.load(sys.stdin)['result'][0]; print('VERIFIED' if r['SourceCode'] else 'NOT VERIFIED'); print('Name:', r['ContractName'])"
-
-# If SourceCode is non-empty: pull the source, document on EH, done. No cracking needed.
-
-# 2. Check EH database
-curl "https://www.ethereumhistory.com/api/agent/contracts/$ADDRESS" \
-  | python3 -c "import sys,json; d=json.load(sys.stdin); c=d.get('contract',{}); print('CRACKED' if c.get('verificationMethod') else 'NOT CRACKED')"
-```
-
-## Step 1: Extract Target Bytecode
+## Step 1: Fetch Bytecode
 
 ```bash
-# Get on-chain runtime bytecode (what's stored in the EVM)
-RUNTIME=$(curl -s "https://api.etherscan.io/v2/api?chainid=1&module=proxy&action=eth_getCode&address=$ADDRESS&tag=latest&apikey=$ETHERSCAN_KEY" \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['result'][2:])")
-echo "Runtime: ${#RUNTIME} chars = $((${#RUNTIME}/2)) bytes"
-echo "$RUNTIME" > /tmp/target_runtime.txt
+# Runtime bytecode
+curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=AHMV3WAI75TQVJI2XEFUUKFKK1KJTFY1BD&module=proxy&action=eth_getCode&address=0xCONTRACT&tag=latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'][2:])" > /tmp/target_runtime.hex
 
-# Get creation bytecode from the deployment transaction
-# First get creation tx hash
-CREATION_TX=$(curl -s "https://api.etherscan.io/v2/api?chainid=1&module=contract&action=getcontractcreation&contractaddresses=$ADDRESS&apikey=$ETHERSCAN_KEY" \
-  | python3 -c "import sys,json; r=json.load(sys.stdin)['result']; print(r[0]['txHash'] if r else 'not found')")
-
-# Then get the input data
-curl -s "https://api.etherscan.io/v2/api?chainid=1&module=proxy&action=eth_getTransactionByHash&txhash=$CREATION_TX&apikey=$ETHERSCAN_KEY" \
-  | python3 -c "
-import sys,json
-tx = json.load(sys.stdin)['result']
-inp = tx['input'][2:]
-# Find f300 (RETURN in creation code) to split init from runtime
-idx = inp.find('f300')
-if idx >= 0:
-    print('Init:', idx//2 + 2, 'B')
-    print('Runtime from creation:', (len(inp)-idx-4)//2, 'B')
-    rt = inp[idx+4:]
-    target = open('/tmp/target_runtime.txt').read().strip()
-    print('Runtime matches on-chain:', rt == target)
-" 2>/dev/null
+# Creation bytecode (from deploy tx)
+curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=AHMV3WAI75TQVJI2XEFUUKFKK1KJTFY1BD&module=proxy&action=eth_getTransactionByHash&txhash=0xDEPLOY_TX" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['input'][2:])" > /tmp/target_creation.hex
 ```
 
-## Step 2: Identify the Compiler Era
-
-Ethereum contract compilers by era:
-
-| Era | Dates | Compiler | Tool |
-|---|---|---|---|
-| Pre-Frontier | Before Aug 7 2015 | Native C++ solc (webthree-umbrella) | Docker build |
-| Frontier | Aug 7 - Dec 2015 | soljson v0.1.0 - v0.1.6 | Node.js |
-| Homestead | Mar 2016 - Oct 2016 | soljson v0.1.7 - v0.3.x | Node.js |
-| Later | 2016+ | soljson v0.4.x+ | solc binary |
-
-Clues in the bytecode:
-- `60606040` prefix = Solidity (common from v0.1.x)
-- `60e060020a` in dispatcher = old-style selector dispatch
-- LLL: starts with `(seq ...)` patterns, different structure
-- Serpent: similar to Solidity but different codegen for loops/calls
-
-## Step 3: Compiler Sweep (soljson)
-
-Download all soljson versions:
+Save byte counts:
 ```bash
-# List all versions
-curl https://ethereum.github.io/solc-bin/bin/list.json | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-for v in sorted(d['builds'], key=lambda x: x['path']):
-    print(v['path'])
-" | grep "v0\.[0-3]\." | head -50
+echo "Runtime: $(wc -c < /tmp/target_runtime.hex | tr -d ' ') hex chars = $(( $(wc -c < /tmp/target_runtime.hex | tr -d ' ') / 2 )) bytes"
+echo "Creation: $(wc -c < /tmp/target_creation.hex | tr -d ' ') hex chars = $(( $(wc -c < /tmp/target_creation.hex | tr -d ' ') / 2 )) bytes"
 ```
 
-Compile and compare:
-```javascript
-// compile.js - run with node
-const fs = require('fs');
-const Module = require('/tmp/soljson-v0.1.1.js'); // adjust version
+## Step 2: Extract Selectors
 
-const src = fs.readFileSync('/tmp/candidate.sol', 'utf8');
-const compile = Module.cwrap('compileJSON', 'string', ['string', 'number']);
-
-// optimizer OFF
-const outOff = JSON.parse(compile(src, 0));
-// optimizer ON
-const outOn = JSON.parse(compile(src, 1));
-
-const target = fs.readFileSync('/tmp/target_runtime.txt', 'utf8').trim();
-
-for (const [name, contract] of Object.entries(outOff.contracts || {})) {
-  const bin = contract.bytecode || '';
-  const idx = bin.indexOf('f300');
-  const rt = idx >= 0 ? bin.substring(idx + 4) : '';
-  if (rt === target) console.log(`EXACT MATCH (opt OFF): ${name}`);
-  else if (rt.length === target.length) console.log(`Same size, no match (opt OFF): ${name}`);
-}
-
-for (const [name, contract] of Object.entries(outOn.contracts || {})) {
-  const bin = contract.bytecode || '';
-  const idx = bin.indexOf('f300');
-  const rt = idx >= 0 ? bin.substring(idx + 4) : '';
-  if (rt === target) console.log(`EXACT MATCH (opt ON): ${name}`);
-  else if (rt.length === target.length) console.log(`Same size, no match (opt ON): ${name}`);
-}
-```
-
-## Step 4: Native C++ Solc (for Aug 2015 contracts)
-
-Some Frontier-era contracts were compiled with the native C++ solc built into cpp-ethereum or the webthree-umbrella. The soljson JS versions did not exist yet or produced different codegen.
-
-Use Docker builds for specific compiler commits:
-
-```bash
-# webthree-umbrella era (Feb 2016 vintage, produces Frontier-compatible bytecode)
-docker run --rm solc-umbrella sh -c \
-  'echo "SOURCE" > /tmp/t.sol && /umbrella/build/solidity/solc/solc --bin-runtime /tmp/t.sol'
-
-# Compare output
-docker run --rm -v /tmp/candidate.sol:/tmp/t.sol solc-umbrella \
-  /umbrella/build/solidity/solc/solc --bin-runtime /tmp/t.sol
-```
-
-## Step 5: Function Selector Analysis
-
-Extract selectors from target bytecode to understand the ABI:
-
-```python
-target = open('/tmp/target_runtime.txt').read().strip()
-data = bytes.fromhex(target)
-sels = []
-i = 0
-while i < min(500, len(data)):
-    if data[i] == 0x63 and i+5 < len(data):
-        sels.append(data[i+1:i+5].hex())
-        i += 5
-    else:
-        i += 1
-print('Selectors:', sels)
-```
+Look for the dispatch table pattern. In v0.1.x compiled contracts:
+- `PUSH4 <selector> ... EQ JUMPI` pattern
+- Extract all 4-byte selectors
 
 Look up selectors:
 ```bash
-curl "https://www.4byte.directory/api/v1/signatures/?hex_signature=0x{selector}"
+curl -s "https://api.openchain.xyz/signature-database/v1/lookup?function=0xSEL1,0xSEL2,0xSEL3&filter=true"
 ```
 
-Use selectors to reconstruct function signatures, which constrains source reconstruction.
+Note: 4byte.directory returns 403. Use openchain.xyz only.
 
-## Step 6: Source Reconstruction
+## Step 3: Analyze Bytecode
 
-When you have the ABI but not the source:
+Key patterns to identify:
+- **Storage layout**: Which slots are used, mapping vs value, struct packing
+- **Events**: Count LOG0-LOG4 opcodes. Zero LOG = no events.
+- **External calls**: Count CALL/DELEGATECALL opcodes
+- **Compiler era**: Dispatch pattern `60e060020a` = v0.1.x with optimizer
+- **SLOAD/SSTORE count**: Tells you how many state reads/writes per function
+- **TIMESTAMP**: Indicates time-dependent logic
 
-1. Check dapp-bin (the official example library): `https://github.com/ethereum/dapp-bin`
-2. Check early Solidity docs examples via Wayback Machine
-3. Search GitHub for function names from the ABI
-4. Search Reddit/bitcointalk for the contract address or deployer
-5. Check if the deployer deployed other contracts with known source
+## Step 4: Reconstruct Source
 
-Common patterns to recognize:
-- `SimpleStorage`: `set(uint256)` + `get()`, 144B runtime
-- `Greeter`: `greet()` + `kill()` + optional `setGreeting(string)`
-- `Mortal`: just `kill()`, extends Greeter
-- `Coin/Token`: `sendCoin(address,uint256)` + `coinBalanceOf(address)`
-- `NameReg`: `register(bytes32)` + `unregister()` + `owner(bytes32)`
+Write Solidity targeting the identified compiler version. Key rules:
 
-## Step 7: Bytecode Diff Analysis
+- **Function visibility**: Early Solidity had no explicit visibility. All functions public by default.
+- **No constructor keyword**: Use `function ContractName()` pattern
+- **Data types**: `uint` = `uint256`, `address`, `bytes32`, `bool`
+- **Mappings vs structs**: Separate mappings produce MORE bytecode than structs (more SLOAD ops). Match the SLOAD count.
 
-When you're close but not matching:
+## Step 5: Compile and Compare
 
-```python
-target = open('/tmp/target_runtime.txt').read().strip()
-candidate = open('/tmp/candidate_runtime.txt').read().strip()
+### Compiler cache
 
-t = bytes.fromhex(target)
-c = bytes.fromhex(candidate)
+soljson compilers cached at `/tmp/soljson/`:
+- Named versions: `soljson-v0.1.1+commit.6ff4cd6.js` through `soljson-v0.3.6+commit.3fc68da.js`
+- Shorthand aliases: `v011.js`, `v0.1.2.js`, etc.
 
-print(f"Target: {len(t)}B, Candidate: {len(c)}B, diff: {len(c)-len(t)}B")
+### Compilation script
 
-# Find first difference
-for i in range(min(len(t), len(c))):
-    if t[i] != c[i]:
-        print(f"First diff at byte {i} (0x{i:02x}): target=0x{t[i]:02x} candidate=0x{c[i]:02x}")
-        print(f"Context: {target[max(0,i*2-10):i*2+20]}")
-        break
-```
-
-Common causes of near-misses:
-- Wrong function declaration order (Solidity optimizer output depends on order)
-- Comparison operand flipped (`a > b` vs `b < a` — same logic, different opcode)
-- Constructor argument type mismatch
-- Wrong optimizer setting (on vs off)
-- Wrong compiler version (try adjacent versions)
-- Missing or extra state variable
-
-## Step 8: Verify the Match
-
-Before claiming a crack, verify in a clean environment:
+Use Node.js with solc wrapper. See `scripts/compile-and-compare.js` in this skill directory.
 
 ```bash
-# 1. Compile in fresh environment
-node compile.js  # should output EXACT MATCH
-
-# 2. Verify runtime hash matches
-python3 -c "
-import hashlib
-target = open('/tmp/target_runtime.txt').read().strip()
-candidate = open('/tmp/candidate_runtime.txt').read().strip()
-assert target == candidate, 'MISMATCH'
-print('VERIFIED: exact match')
-print('Hash:', hashlib.sha256(bytes.fromhex(target)).hexdigest()[:16])
-"
-
-# 3. Verify init bytecode if available
-# (compare creation TX input with your compiled output)
+node ~/.agents/skills/eth-bytecode-cracker/scripts/compile-and-compare.js \
+  /tmp/candidate.sol ContractName /tmp/soljson/soljson-v0.1.1+commit.6ff4cd6.js \
+  /tmp/target_runtime.hex /tmp/target_creation.hex
 ```
 
-## Step 9: Create Verification Repo
+Outputs: match status, byte-level diff position, compiled hex files.
 
-Every proof requires a public repo. Structure:
+### Native C++ solc (Docker) for pre-0.1.1 era
 
+```bash
+# solc-jan20 (v0.2.0, Jan 20 2016 commit)
+docker run --rm solc-jan20 sh -c 'echo "SOURCE" > /tmp/t.sol && /umbrella/build/solidity/solc/solc --bin-runtime /tmp/t.sol'
+
+# solc-poc8 (v0.8.2 internal, Feb 2015 pre-release)
+docker run --rm solc-poc8 sh -c 'echo "SOURCE" > /tmp/t.sol && /umbrella/build/solidity/solc/solc --bin-runtime /tmp/t.sol'
 ```
-{contractname}-verification/
-├── README.md          # What this is, the match result, compiler details
-├── {contract}.sol     # The exact source that produces the match
-├── verify.js          # Reproducible verification script
-├── target_runtime.txt # On-chain bytecode (for reference)
-└── RESULTS.md         # Detailed findings
+
+## Step 6: Permutation Cracking
+
+**This is the key technique.** Function declaration order in source code affects optimizer output in v0.1.x-v0.3.x compilers. The optimizer's shared subroutine placement depends on which function first triggers the trampoline.
+
+See `scripts/permutation-cracker.js` for the automated tool.
+
+```bash
+node ~/.agents/skills/eth-bytecode-cracker/scripts/permutation-cracker.js \
+  /tmp/candidate.sol ContractName /tmp/soljson/soljson-v0.1.1+commit.6ff4cd6.js \
+  /tmp/target_runtime.hex /tmp/target_creation.hex
 ```
 
-README must include:
-- Contract address
-- Deployment block and timestamp
-- Compiler version and optimizer settings
-- Bytecode hash (SHA-256 of runtime hex)
-- Command to reproduce the verification
+This generates all permutations of function declarations and tests each one. For 6 functions = 720 permutations. For 6 functions + operand flip variants = 4320+ combos.
 
-## Step 10: Publish
+### Operand order matters
 
-**Note:** Once a contract is verified on EthereumHistory, its proof fields are locked. Only admins can overwrite an existing proof. Do not attempt to re-submit a proof for an already-verified contract unless you have admin access and a legitimate correction.
+`0 == m_record[name].owner` produces different bytecode than `m_record[name].owner == 0`. The EQ opcode gets different stack ordering. Generate variants for each comparison.
 
-Once verified, follow the full publishing pipeline:
+## Step 7: Publishing Pipeline (MANDATORY)
 
-1. Create verification repo in the `cartoonitunes/` GitHub org
-2. Add row to `repos/awesome-ethereum-proofs/README.md`
-3. Submit to EthereumHistory via `eth-historian` skill (manage endpoint)
-4. Manually fire social bot (bot only auto-fires on first edit per contract)
-5. Confirm contract appears on [ethereumhistory.com/proofs](https://ethereumhistory.com/proofs)
+Once cracked (byte-for-byte match), run ALL four steps:
 
-Do not claim a contract is cracked until all 5 steps are complete.
+### 7a. Create verification repo
 
-## Common Mistakes
+Create `cartoonitunes/<contractname>-verification` on GitHub containing:
+- Source code (`.sol`)
+- Compiler info in README
+- Reproducible verification script
+- Git config: `user.name "cartoonitunes"`, `user.email "cartoonitunes@users.noreply.github.com"`
 
-| Mistake | Why it fails |
-|---|---|
-| Submitting without exact match | Automated check will reject it |
-| Using decompiled code as "source" | Decompilation produces functionally equivalent code, not original |
-| Wrong function order | Solidity optimizer output is order-dependent |
-| Claiming "same logic" | The standard is same bytes, not same behavior |
-| Skipping the repo | No public repo = no accepted proof |
-| Starting crack work before checking Etherscan | Wasted effort if already verified |
+### 7b. Update awesome-ethereum-proofs
+
+Add row to `repos/awesome-ethereum-proofs/README.md` table in chronological order by deployment date.
+
+### 7c. Document on EthereumHistory
+
+POST to ethereumhistory.com API. **Read this carefully — two non-obvious rules:**
+
+**Rule 1: `verificationStatus` is computed from `sourceCode`.** The site returns `"verified"` only when `sourceCode` is present in the DB. Setting `verificationMethod`, `compilerCommit`, etc. without `sourceCode` leaves the contract as `"decompiled"`. Always include `sourceCode` in the same request.
+
+**Rule 2: All field names are camelCase.** Snake_case fields are silently ignored.
+
+```bash
+# Login
+curl -c /tmp/eh_cookies.txt -X POST "https://www.ethereumhistory.com/api/historian/login" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"neo@openclaw.ai","token":"neo-historian-d4b105db78f760f0abcc58c13c4452f2"}'
+COOKIE=$(grep "eh_historian" /tmp/eh_cookies.txt | awk '{print $NF}')
+
+# Publish — include sourceCode or it won't show as verified
+curl -X POST "https://www.ethereumhistory.com/api/contract/0xADDRESS/history/manage" \
+  -H "Content-Type: application/json" \
+  -H "Cookie: eh_historian=$COOKIE" \
+  -d '{
+    "contract": {
+      "verificationStatus": "verified",
+      "verificationMethod": "exact_bytecode_match",
+      "compilerLanguage": "solidity",
+      "compilerCommit": "soljson vX.X.X (optimizer ON/OFF)",
+      "verificationProofUrl": "https://github.com/cartoonitunes/REPO",  // ← this URL appears as the "View Verification Proof" button on the contract page
+      "verificationNotes": "Exact bytecode match. Runtime: X bytes.",
+      "sourceCode": "contract Foo { ... }"
+    },
+    "links": [],
+    "deleteIds": []
+  }'
+```
+
+**Verification methods:** `exact_bytecode_match` | `etherscan_verified` | `author_published` | `source_reconstructed`
+
+**If contract is already Etherscan-verified:** use `etherscan_verified` method, NOT `exact_bytecode_match`. Check Etherscan before doing any crack work (see pre-flight in AGENTS.md).
+
+After publishing, manually fire the bot (the auto-trigger only fires on first-ever edit; if you touched the contract earlier it won't fire automatically):
+```bash
+curl -X POST "https://nameless-lake-39668-540f6213f30f.herokuapp.com/contractdocumentation" \
+  -H "Content-Type: application/json" \
+  -d '{"contract_address":"0xADDR","contract_name":"Name","deployment_timestamp":"2015-...","short_description":"...","contract_url":"https://ethereumhistory.com/contract/0xADDR"}'
+```
+
+### 7d. Verify on /proofs page
+
+Confirm contract appears at `ethereumhistory.com/proofs`.
+
+## Known Compiler Quirks
+
+- **v0.1.1**: Function order affects optimizer. Operand order in comparisons matters. `0 == x` vs `x == 0` produce different EQ stack patterns.
+- **v0.1.1-v0.2.0**: `changeOwner` vs `setOwner` naming affects selector AND optimizer layout.
+- **Struct vs mappings**: Structs produce fewer SLOADs. If on-chain has many SLOADs, original likely used separate mappings.
+- **Constructor**: `function ContractName()` not `constructor()`.
+- **No events = no LOG opcodes**: If zero LOG opcodes on chain, source has zero `event` declarations.
+- **Public state variables**: Auto-generate getter functions that appear as selectors.
+
+## Unknown Selector / Event Hash Recovery
+
+When selectors or event hashes aren't in any database (4byte.directory, OpenChain, samczsun), use these techniques in order:
+
+### 1. Signature database lookup (fast, try first)
+```bash
+# OpenChain (preferred)
+curl -s "https://api.openchain.xyz/signature-database/v1/lookup?function=0xSELECTOR"
+# 4byte.directory (functions)
+curl -s "https://www.4byte.directory/api/v1/signatures/?hex_signature=0xSELECTOR"
+# 4byte.directory (events)
+curl -s "https://www.4byte.directory/api/v1/event-signatures/?hex_signature=0xEVENT_HASH"
+```
+
+### 2. Semantic guessing (fast, try 50-100 common names)
+Test common Solidity function names against target selectors using keccak256. Cover:
+- Token patterns: `paused`, `frozen`, `listed`, `tradingEnabled`, `mintable`
+- ICO patterns: `closeSale`, `saleActive`, `crowdsaleOpen`, `icoEnded`
+- Admin patterns: `setStatus`, `setActive`, `setEnabled`, `setReady`
+- Test both `setName(bool)` setter and `name()` getter patterns
+
+### 3. C keccak brute-forcer (for unknown function/event names)
+When the event hash is a **full 32-byte keccak match**, brute-force the event name.
+Compile with `-O3`, runs at ~27M hashes/sec on M-series Mac:
+
+```c
+// Key pattern: test name as Event(bool), getter name(), setter setName(bool) simultaneously
+// See /tmp/keccak_crack2.c for full implementation
+// Coverage: length 1-5 in ~2min, length 6 in ~38min, length 7 in ~40 hours
+gcc -O3 -o /tmp/keccak_crack /tmp/keccak_crack2.c
+/tmp/keccak_crack 8  # search names up to 8 chars
+```
+
+Strategy: Events have FULL 32-byte hashes (cryptographically unique), so finding the event name
+gives you the exact function name. Function selectors are only 4 bytes (collisions possible).
+
+### 4. Factory bytecode extraction
+If the contract was created by a factory:
+- Fetch the factory's runtime bytecode
+- Search for the token's runtime bytecode embedded in the factory (it's stored verbatim)
+- The factory was compiled from a single Solidity file containing both factory + token definitions
+- This confirms the token source is part of a larger compilation unit
+
+### 5. Related repos / security audits
+Search GitHub for the project name + "audit" or "token" or "contract":
+```bash
+curl -s "https://api.github.com/search/repositories?q=PROJECTNAME&sort=stars"
+```
+Security auditors (bokkypoobah, OpenZeppelin, ConsenSys) often publish original source code
+alongside their audit reports. The ORIGINAL pre-audit source is the one that matches on-chain.
+
+### 6. On-chain event log analysis
+If the mystery function was ever called, its event logs are on-chain:
+```bash
+# Get logs for the event topic
+curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=KEY&module=logs&action=getLogs&address=0xADDR&topic0=0xEVENT_HASH&fromBlock=0&toBlock=latest"
+```
+
+## Key Lessons (Post-Frontier Era, 0.4.x+)
+
+- **String utility code size varies between compiler versions** — even patch versions can differ by 30-200 bytes in string getter/setter utility functions
+- **`throw` vs `require()`**: `throw` compiles to INVALID (0xfe, 1 byte). `require()` compiles to ISZERO+JUMPI+REVERT (~5 bytes). Count REVERT vs INVALID opcodes to determine which was used.
+- **Factory-created contracts**: The token bytecode is embedded verbatim in the factory runtime. If you can find the factory, you have a byte-for-byte copy of the token creation code.
+- **bool public variables**: Auto-generate getter functions. `bool public isLocked` creates `isLocked()` getter automatically.
+- **Dispatch entry sizes**: Compare dispatch table entry sizes between compiled and on-chain. If all match, the source has the right functions — the gap is in internal body code (usually string utilities).
+
+## Candidate Selection
+
+Frontier contracts with ETH balance are prioritized. Balance list at `memory/frontier-contract-balances.json`. Skip contracts already verified on Etherscan. Skip contracts already in awesome-ethereum-proofs.
+
+### Native C++ solc Binaries Repository
+Pre-built native C++ solc binaries for frontier-era bytecode archaeology:
+**https://github.com/cartoonitunes/solc-native-builds**
+
+10 binaries covering Feb 2015 - Feb 2016 (poc-8 through webthree-umbrella v1.1.2).
+These produce different bytecode than soljson/npm builds — critical for exact matches.
