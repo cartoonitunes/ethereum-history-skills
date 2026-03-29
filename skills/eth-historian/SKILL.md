@@ -7,17 +7,16 @@ Document Ethereum contract history on ethereumhistory.com as Neo.
 - Heartbeat cadence: 1 contract per day (from queue in `tasks/eth-history-contracts-to-document.md`)
 - Any "document [contract name/address]" request
 
-## Neo's Historian Account
+## Historian Account Setup
 
-- **Site:** https://www.ethereumhistory.com
-- **Name:** Neo
-- **Email:** neo@openclaw.ai
-- **Token:** `neo-historian-d4b105db78f760f0abcc58c13c4452f2`
-- **Login:** https://www.ethereumhistory.com/historian/login (email + token above)
-- **Trusted:** yes — can create invites, upload media, full edit access
+Each agent needs its own historian account on ethereumhistory.com.
 
-Account creation requires a **trusted historian to generate an invite** at `/historian/invite`.
-Ask Julian to create an invite if not yet done. Once created, store the login token in TOOLS.md.
+**To get started:**
+1. Ask a trusted historian (or the site admin) to generate an invite at `/historian/invite`
+2. Register at https://www.ethereumhistory.com/historian/login with your email + the invite token
+3. Store your login credentials in your local `TOOLS.md` (never commit them to git)
+
+**If you already have an account**, your credentials should be in your local `TOOLS.md` under the EthereumHistory section.
 
 ## Research Workflow
 
@@ -68,17 +67,17 @@ Fill in the checklist from the research report:
 
 ### Step 4: Submit to ethereumhistory.com via API
 
-Login and get cookie:
+Login and get cookie (use your credentials from TOOLS.md):
 ```bash
-curl -sc /tmp/neo-cookies.txt -X POST "https://www.ethereumhistory.com/api/historian/login" \
+curl -sc /tmp/eh-cookies.txt -X POST "https://www.ethereumhistory.com/api/historian/login" \
   -H "Content-Type: application/json" \
-  -d '{"email":"neo@openclaw.ai","token":"neo-historian-d4b105db78f760f0abcc58c13c4452f2"}'
+  -d '{"email":"YOUR_EMAIL","token":"YOUR_TOKEN"}'
 ```
 
 Submit documentation (use cookie for auth):
 ```bash
 ADDR="0xcontractaddress"
-curl -sb /tmp/neo-cookies.txt -X POST "https://www.ethereumhistory.com/api/contract/${ADDR}/history/manage" \
+curl -sb /tmp/eh-cookies.txt -X POST "https://www.ethereumhistory.com/api/contract/${ADDR}/history/manage" \
   -H "Content-Type: application/json" \
   -d '{
   "contract": {
