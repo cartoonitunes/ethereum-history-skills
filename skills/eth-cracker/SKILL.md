@@ -25,10 +25,10 @@ Reproduce byte-for-byte exact bytecode for unverified frontier-era Ethereum cont
 
 ```bash
 # Runtime bytecode
-curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=AHMV3WAI75TQVJI2XEFUUKFKK1KJTFY1BD&module=proxy&action=eth_getCode&address=0xCONTRACT&tag=latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'][2:])" > /tmp/target_runtime.hex
+curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=YOUR_ETHERSCAN_API_KEY&module=proxy&action=eth_getCode&address=0xCONTRACT&tag=latest" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'][2:])" > /tmp/target_runtime.hex
 
 # Creation bytecode (from deploy tx)
-curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=AHMV3WAI75TQVJI2XEFUUKFKK1KJTFY1BD&module=proxy&action=eth_getTransactionByHash&txhash=0xDEPLOY_TX" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['input'][2:])" > /tmp/target_creation.hex
+curl -s "https://api.etherscan.io/v2/api?chainid=1&apikey=YOUR_ETHERSCAN_API_KEY&module=proxy&action=eth_getTransactionByHash&txhash=0xDEPLOY_TX" | python3 -c "import sys,json; print(json.load(sys.stdin)['result']['input'][2:])" > /tmp/target_creation.hex
 ```
 
 Save byte counts:
@@ -183,7 +183,7 @@ POST to ethereumhistory.com API. **Read this carefully — two non-obvious rules
 # Login
 curl -c /tmp/eh_cookies.txt -X POST "https://www.ethereumhistory.com/api/historian/login" \
   -H "Content-Type: application/json" \
-  -d '{"email":"neo@openclaw.ai","token":"neo-historian-d4b105db78f760f0abcc58c13c4452f2"}'
+  -d '{"email":"YOUR_EMAIL","token":"YOUR_TOKEN"}'
 COOKIE=$(grep "eh_historian" /tmp/eh_cookies.txt | awk '{print $NF}')
 
 # Publish — include sourceCode or it won't show as verified
