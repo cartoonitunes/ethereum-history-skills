@@ -209,16 +209,107 @@ curl -X POST "https://www.ethereumhistory.com/api/contract/0xADDRESS/history/man
 
 **If contract is already Etherscan-verified:** use `etherscan_verified` method, NOT `exact_bytecode_match`. Check Etherscan before doing any crack work (see pre-flight in AGENTS.md).
 
-After publishing, manually fire the bot (the auto-trigger only fires on first-ever edit; if you touched the contract earlier it won't fire automatically):
-```bash
-curl -X POST "https://nameless-lake-39668-540f6213f30f.herokuapp.com/contractdocumentation" \
-  -H "Content-Type: application/json" \
-  -d '{"contract_address":"0xADDR","contract_name":"Name","deployment_timestamp":"2015-...","short_description":"...","contract_url":"https://ethereumhistory.com/contract/0xADDR"}'
-```
-
 ### 7d. Verify on /proofs page
 
 Confirm contract appears at `ethereumhistory.com/proofs`.
+
+## Compiler Archaeology
+
+Before compiling anything, identify which compiler family produced the on-chain bytecode. The wrong family will never match no matter how many permutations you sweep.
+
+### Era identification (runtime prefix)
+
+The first few bytes of runtime bytecode reveal the compiler era:
+
+| Runtime prefix | Compiler era |
+|----------------|--------------|
+| `6060604052…` | v0.1.x – v0.3.x (Frontier / early Homestead, free-memory pointer at 0x40 = 0x60) |
+| `6080604052…` | v0.4.x and later (free-memory pointer bumped to 0x80) |
+
+If you see `6080`, stop reaching for v0.1.x soljson — it's v0.4.0+ and you should be sweeping a different range.
+
+### Init code length: soljson vs native C++
+
+The **init code** (the bytes the deploy tx prepends before the runtime payload) gives away the build flavor:
+
+- **19-byte init code** → **soljson** (Emscripten-compiled JS build, distributed via npm/`solc-bin`). Init sequence is the canonical `PUSH1 0x60 PUSH1 0x40 MSTORE …` runtime-copy stub, ~19 bytes.
+- **Longer init code** → **native C++ solc**. Native builds (especially pre-soljson and early native releases) emit subtly different init sequences, often 20–30+ bytes, and produce different runtime bytecode for the same source.
+
+If the on-chain init code is longer than 19 bytes, soljson will never match — you need a native C++ build.
+
+### soljson version table
+
+Cached at `/tmp/soljson/`. Approximate release dates (use the commit hash for exact date):
+
+| Version | Commit | Approx. date |
+|---------|--------|--------------|
+| v0.1.1 | 6ff4cd6 | Jan 2016 |
+| v0.1.2 | d0d36e3 | Feb 2016 |
+| v0.1.3 | 028f561 | Mar 2016 |
+| v0.1.4 | 5f6c3cd | Apr 2016 |
+| v0.1.5 | 23865e3 | Jun 2016 |
+| v0.1.6 | 2dabbdf | Jul 2016 |
+| v0.1.7 | b4e666c | Aug 2016 |
+| v0.2.0 | 4dc2445 | Aug 2016 |
+| v0.2.1 | 91a6b35 | Sep 2016 |
+| v0.2.2 | ef92f56 | Sep 2016 |
+| v0.3.0 | 11d6727 | Sep 2016 |
+| v0.3.1 | c492d9b | Oct 2016 |
+| v0.3.2 | 81ae2a7 | Oct 2016 |
+| v0.3.3 | 4dc1cb1 | Nov 2016 |
+| v0.3.4 | 7dab890 | Nov 2016 |
+| v0.3.5 | 5f97274 | Dec 2016 |
+| v0.3.6 | 3fc68da | Dec 2016 |
+
+Sweep from the deployment-date neighbors outward. A contract deployed in March 2016 should be tested against v0.1.2/v0.1.3/v0.1.4 first.
+
+### Native C++ Docker builds
+
+When init code is longer than 19 bytes, or soljson gets close-but-not-exact (typically 1–5 byte diff), drop to a native C++ build. Pre-built images (see https://github.com/cartoonitunes/solc-native-builds):
+
+| Docker tag | Approx. era |
+|------------|-------------|
+| `solc-poc8` | Feb 2015 (PoC-8 internal pre-release) |
+| `solc-poc9` | Mar 2015 (PoC-9) |
+| `solc-aug15` | Aug 2015 (Frontier launch window) |
+| `solc-oct15` | Oct 2015 |
+| `solc-dec15` | Dec 2015 |
+| `solc-jan20` | Jan 20 2016 (≈ v0.2.0 source tree) |
+| `solc-mar16` | Mar 2016 |
+| `solc-jun16` | Jun 2016 |
+| `solc-v011` | v0.1.1 native build |
+| `solc-webthree-1.1.2` | webthree-umbrella v1.1.2, Feb 2016 |
+
+Run example:
+```bash
+docker run --rm solc-poc8 sh -c 'cat > /tmp/t.sol <<EOF
+contract Foo { function bar() {} }
+EOF
+/umbrella/build/solidity/solc/solc --bin-runtime /tmp/t.sol'
+```
+
+These produce **different bytecode than soljson/npm builds for the same source** — that difference is exactly why they're needed for exact matches in the pre-0.1.1 era.
+
+### v0.1.x source-level quirks
+
+These behaviors changed in later versions and are critical to reproduce when reconstructing v0.1.x source. Bytecode that "looks weird" is usually one of these:
+
+- **Right-to-left expression evaluation.** Sub-expressions are evaluated right-to-left, the opposite of v0.4+. `a() + b()` calls `b()` first. This affects stack ordering in the compiled output and can flip the byte sequence of two otherwise-identical-looking expressions.
+- **`uint(...)` defeats constant folding.** A literal like `1000000` gets constant-folded into a single PUSH; `uint(1000000)` is treated as a cast and emits the value-then-cast opcodes instead. Use the explicit-cast form when the on-chain bytecode shows separate push + cast ops where you'd expect a folded constant.
+- **Declaration vs assignment compile to different opcodes.** `uint x = 5;` (declaration with initializer) and `uint x; x = 5;` (declaration then assignment) are NOT equivalent at the bytecode level in v0.1.x — the assignment form emits an extra MSTORE/SSTORE pattern. Match the on-chain pattern exactly.
+- **Function declaration order changes bytecode.** The optimizer's shared-subroutine ("trampoline") placement is anchored to the first function that uses it, so reordering function declarations reorders the entire dispatch+trampoline layout. This is the basis for the permutation-cracking step above.
+- **No `.push()` on dynamic arrays.** v0.1.x has no array `.push()` method. Append is `arr[arr.length++] = value;` (manual length bump + index assignment). If you write `.push()`, the compile fails — but if the on-chain bytecode shows the manual length-bump pattern, write the source the same way.
+- **Structs are NOT storage-packed.** Each struct field gets its own 32-byte storage slot regardless of declared size — `struct S { uint8 a; uint8 b; }` consumes 2 slots, not 1. This affects SLOAD/SSTORE counts and the storage-slot constants in the bytecode.
+
+### Serpent contracts
+
+Rare, but they exist on chain (mostly very early Frontier contracts and a handful of DAO-era oddities). Tells:
+
+- **No Solidity dispatch table.** No `PUSH4 <selector> ... EQ JUMPI` cascade at the start. Function dispatch is hand-rolled or absent entirely.
+- **Different runtime prefix.** Doesn't start with `6060604052` or `6080604052`.
+- **Hand-coded ABI.** Calldata layout may not follow the Solidity ABI at all.
+
+If you see no dispatch table, stop trying to reconstruct Solidity — it's almost certainly Serpent (or LLL, or hand-written assembly). Serpent reconstruction is out of scope for this skill; document the contract as `source_reconstructed` at best, not `exact_bytecode_match`.
 
 ## Known Compiler Quirks
 
