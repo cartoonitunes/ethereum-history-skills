@@ -260,24 +260,12 @@ Returns: hash, count, groupVerified, groupName, groupContractType, contracts[]
 4. Reconstruct Solidity source
 5. Compile with candidate compiler versions (solc binaries at /tmp/solc_bins/)
 6. Match runtime bytecode (strip bzzr0 metadata for post-0.4.7 contracts)
-7. Publish: verification repo, awesome-ethereum-proofs, EH manage API, social bot
+7. Publish: verification repo, awesome-ethereum-proofs, EH manage API
 
 ## Sibling-First Crack Strategy
 Crack contracts with most siblings first for maximum coverage.
 Query: `?unverified=1&sort=siblings&limit=20`
 Priority list: memory/uncracked-sibling-priority.md
-
-## Social Bot Trigger
-```python
-requests.post("https://nameless-lake-39668-540f6213f30f.herokuapp.com/contractdocumentation", json={
-    "contract_address": addr,
-    "contract_name": name,
-    "deployment_timestamp": timestamp,  # Must be pre-2017 currently
-    "short_description": desc,
-    "contract_url": f"https://ethereumhistory.com/contract/{addr}"
-})
-```
-Auto-fires on first edit via manage API. Only manually trigger for contracts with prior edits.
 
 ## API Keys
 Historians can generate API keys from their profile page.
