@@ -61,10 +61,12 @@ Primary sources that count:
 See [eth-cracker/SKILL.md](./skills/eth-cracker/SKILL.md) for the full cracking process and standards.
 
 Every proof must include:
-1. A **public verification repo** with source code and a reproducible script
+1. A **proof folder in `cartoonitunes/awesome-ethereum-proofs`** under `proofs/<contractname>/` with source code, a reproducible verify script, and a README
 2. Exact compiler version (binary hash preferred)
 3. Optimizer settings (on/off, runs)
 4. Proof that init bytecode + runtime bytecode match on-chain, byte for byte
+
+Note: Individual verification repos (`cartoonitunes/*-verification`) are legacy. Don't create new ones.
 
 Proofs are automatically verified by the EH backend before publishing. A proof that fails the automated check will not be accepted regardless of other claims.
 

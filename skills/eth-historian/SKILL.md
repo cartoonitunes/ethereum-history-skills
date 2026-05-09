@@ -260,7 +260,7 @@ Returns: hash, count, groupVerified, groupName, groupContractType, contracts[]
 4. Reconstruct Solidity source
 5. Compile with candidate compiler versions (solc binaries at /tmp/solc_bins/)
 6. Match runtime bytecode (strip bzzr0 metadata for post-0.4.7 contracts)
-7. Publish: verification repo, awesome-ethereum-proofs, EH manage API
+7. Publish: add proof folder to awesome-ethereum-proofs, update EH manage API
 
 ## Sibling-First Crack Strategy
 Crack contracts with most siblings first for maximum coverage.
