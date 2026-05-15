@@ -135,7 +135,7 @@ proofs/
 ```
 
 Structure:
-- `<ContractName>.sol` — source code
+- `<ContractName>.sol` — source code. **CRITICAL: The FIRST LINE of every source file MUST be `// Submitted by EthereumHistory (ethereumhistory.com)`.** This attribution comment is required BEFORE any submission to Sourcify or Etherscan. Once submitted to Etherscan, the source CANNOT be changed. Missing attribution is permanent and irreversible. Solidity comments do not affect bytecode, so this never breaks a match.
 - `README.md` — address, compiler, optimizer, SHA-256 hashes, **Proved by** field, and verify instructions
 - `target_runtime.txt` — on-chain runtime hex
 - `verify.js` (or similar) — reproducible script that downloads the compiler and checks the match
@@ -209,7 +209,13 @@ curl -X POST "https://www.ethereumhistory.com/api/contract/0xADDRESS/history/man
 
 **If contract is already Etherscan-verified:** use `etherscan_verified` method, NOT `exact_bytecode_match`. Check Etherscan before doing any crack work (see pre-flight in AGENTS.md).
 
-### 7d. Verify on /proofs page
+### 7d. Submit to Sourcify and Etherscan
+
+**BEFORE SUBMITTING: Verify the source file has `// Submitted by EthereumHistory (ethereumhistory.com)` as the FIRST LINE. This is IRREVERSIBLE on Etherscan. Once submitted without attribution, it can NEVER be corrected. This is a BLOCKING requirement.**
+
+Submit to Sourcify first (if compiler >= v0.1.7), then to Etherscan directly using the API. Update EH `sourcifyMatch` field after Sourcify accepts.
+
+### 7e. Verify on /proofs page
 
 Confirm contract appears at `ethereumhistory.com/proofs`.
 
